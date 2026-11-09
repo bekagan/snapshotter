@@ -29,7 +29,7 @@ from .downloader import (
     DownloadProgress,
     InvalidUrlError,
     VideoInfo,
-    extract_youtube_url,
+    extract_video_url,
     ffmpeg_available,
     validate_url,
 )
@@ -201,7 +201,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
 
         self.url_edit = QLineEdit()
-        self.url_edit.setPlaceholderText("Paste a YouTube link")
+        self.url_edit.setPlaceholderText("Paste a YouTube or X (Twitter) link")
         self.url_edit.addAction(styles.icon("link", 16), QLineEdit.ActionPosition.LeadingPosition)
         paste_action = self.url_edit.addAction(
             styles.icon("clipboard", 16, styles.TEXT), QLineEdit.ActionPosition.TrailingPosition
@@ -411,11 +411,11 @@ class MainWindow(QMainWindow):
         self._clipboard_checked = True
         if self.stack.currentIndex() != self.PAGE_INPUT or self.url_edit.text().strip():
             return
-        url = extract_youtube_url(QGuiApplication.clipboard().text())
+        url = extract_video_url(QGuiApplication.clipboard().text())
         if url:
             self.url_edit.setText(url)
             self.url_edit.setCursorPosition(0)
-            self._set_hint("YouTube link found in your clipboard.", "info")
+            self._set_hint("Video link found in your clipboard.", "info")
 
     def _choose_folder(self) -> None:
         start = str(self._destination if self._destination.is_dir() else Path.home())

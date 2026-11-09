@@ -33,7 +33,13 @@ YOUTUBE_HOSTS = {
     "youtube-nocookie.com",
     "www.youtube-nocookie.com",
 }
+TWITTER_HOSTS = {
+    f"{prefix}{domain}"
+    for prefix in ("", "www.", "m.", "mobile.")
+    for domain in ("twitter.com", "x.com")
+}
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_TWEET_ID = re.compile(r"^\d{1,25}$")
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # Best quality, preferring streams that live natively in an MP4 container
@@ -87,8 +93,43 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def extract_youtube_url(text: str) -> Optional[str]:
-    """Return a canonical watch URL if *text* is a YouTube video link, else None."""
+def _youtube_video_url(host: str, parts: list[str], query: str) -> Optional[str]:
+    if host.endswith("youtu.be"):
+        video_id = parts[0] if parts else ""
+    elif parts[:1] == ["watch"]:
+        video_id = parse_qs(query).get("v", [""])[0]
+    elif len(parts) >= 2 and parts[0] in ("shorts", "live", "embed", "v"):
+        video_id = parts[1]
+    else:
+        return None
+    if not _VIDEO_ID.match(video_id):
+        return None
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def _twitter_video_url(parts: list[str]) -> Optional[str]:
+    # Accepts /<user>/status/<id>, /i/status/<id>, /i/web/status/<id> and
+    # /statuses/<id>, optionally followed by /video/<n>.
+    for marker in ("status", "statuses"):
+        if marker in parts:
+            index = parts.index(marker)
+            break
+    else:
+        return None
+    rest = parts[index + 1:]
+    if not rest or not _TWEET_ID.match(rest[0]):
+        return None
+    url = f"https://x.com/i/status/{rest[0]}"
+    if len(rest) >= 3 and rest[1] == "video" and rest[2].isdigit():
+        url += f"/video/{rest[2]}"
+    return url
+
+
+def extract_video_url(text: str) -> Optional[str]:
+    """Return a canonical URL if *text* is a supported video link, else None.
+
+    Supported: YouTube videos and X (Twitter) posts.
+    """
     text = (text or "").strip()
     if not text or len(text) > 2048 or any(c.isspace() for c in text):
         return None
@@ -101,38 +142,31 @@ def extract_youtube_url(text: str) -> Optional[str]:
     if parsed.scheme not in ("http", "https"):
         return None
     host = (parsed.hostname or "").lower()
-    if host not in YOUTUBE_HOSTS:
-        return None
-
     parts = [p for p in parsed.path.split("/") if p]
-    if host.endswith("youtu.be"):
-        video_id = parts[0] if parts else ""
-    elif parts[:1] == ["watch"]:
-        video_id = parse_qs(parsed.query).get("v", [""])[0]
-    elif len(parts) >= 2 and parts[0] in ("shorts", "live", "embed", "v"):
-        video_id = parts[1]
-    else:
-        return None
 
-    if not _VIDEO_ID.match(video_id):
-        return None
-    # Rebuilding the URL drops playlist/timestamp parameters, so only the
-    # single video is ever downloaded.
-    return f"https://www.youtube.com/watch?v={video_id}"
+    # Rebuilding the URL drops playlist/tracking/timestamp parameters, so only
+    # the single video is ever downloaded.
+    if host in YOUTUBE_HOSTS:
+        return _youtube_video_url(host, parts, parsed.query)
+    if host in TWITTER_HOSTS:
+        return _twitter_video_url(parts)
+    return None
 
 
 def validate_url(text: str) -> str:
     """Return a canonical URL or raise InvalidUrlError with a readable message."""
     text = (text or "").strip()
     if not text:
-        raise InvalidUrlError("Paste a YouTube link to get started.")
-    url = extract_youtube_url(text)
+        raise InvalidUrlError("Paste a YouTube or X (Twitter) link to get started.")
+    url = extract_video_url(text)
     if url:
         return url
     lowered = text.lower()
     if "youtu" in lowered and "list=" in lowered:
         raise InvalidUrlError("Playlists aren't supported. Paste a link to a single video.")
-    raise InvalidUrlError("That doesn't look like a YouTube video link.")
+    if "x.com" in lowered or "twitter.com" in lowered:
+        raise InvalidUrlError("Paste a link to a single X (Twitter) post that contains a video.")
+    raise InvalidUrlError("That doesn't look like a YouTube or X (Twitter) video link.")
 
 
 def fetch_thumbnail(url: Optional[str], timeout: float = 6.0, limit: int = 2_000_000) -> Optional[bytes]:
@@ -154,15 +188,20 @@ def friendly_error(message: str) -> str:
     msg = re.sub(r"^(ERROR:\s*)?(\[[^\]]+\]\s*)?([A-Za-z0-9_-]{11}:\s*)?", "", msg)
     low = msg.lower()
     rules = [
+        (("nsfw tweet", "requires authentication"),
+         "This post is marked as sensitive and can't be downloaded without signing in."),
+        (("no video could be found in this tweet", "is not a video"), "This post doesn't contain a video."),
+        (("tweet is unavailable", "suspended"),
+         "This post is unavailable. It may have been deleted or its account is private."),
         (("private video",), "This video is private."),
         (("confirm your age", "age-restricted", "inappropriate for some users"),
          "This video is age-restricted and can't be downloaded without signing in."),
         (("members-only", "join this channel"), "This video is only available to channel members."),
         (("not available in your country", "geo restrict", "blocked it in your country"),
          "This video isn't available in your region."),
-        (("not a bot",), "YouTube is asking for verification. Please wait a while and try again."),
+        (("not a bot",), "The site is asking for verification. Please wait a while and try again."),
         (("premieres in", "live event will begin", "is_upcoming"), "This video hasn't started yet."),
-        (("http error 429", "too many requests"), "YouTube is limiting requests. Please try again later."),
+        (("http error 429", "too many requests"), "The site is limiting requests. Please try again later."),
         (("video unavailable", "this video is unavailable", "has been removed", "does not exist",
           "has been terminated", "no longer available"),
          "This video is unavailable. It may have been removed or made private."),
@@ -281,8 +320,16 @@ class VideoDownloader:
             raise DownloadFailed(friendly_error(str(exc))) from exc
         self._raise_if_cancelled()
 
-        if not info or info.get("_type") in ("playlist", "multi_video"):
-            raise DownloadFailed("Playlists aren't supported. Paste a link to a single video.")
+        if info and info.get("_type") in ("playlist", "multi_video"):
+            entries = [entry for entry in info.get("entries") or [] if entry]
+            if info.get("extractor_key") == "Twitter" and entries:
+                # A post with several videos: take the first one. Links ending
+                # in /video/<n> select a specific video instead.
+                info = entries[0]
+            else:
+                raise DownloadFailed("Playlists aren't supported. Paste a link to a single video.")
+        if not info:
+            raise DownloadFailed("No video could be found at this link.")
         live_status = info.get("live_status")
         if info.get("is_live") or live_status == "is_live":
             raise DownloadFailed("Live streams can't be downloaded while they are live.")

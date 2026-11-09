@@ -1,9 +1,15 @@
 # Snapshotter
 
-Snapshotter is a small Linux desktop app that downloads YouTube videos as MP4.
+Snapshotter is a small Linux desktop app that downloads videos from YouTube and X (Twitter)
+as MP4.
 
-Open the app, paste a YouTube link, and click **Download Video**. The video is saved to your
-`~/Downloads` folder.
+Open the app, paste a YouTube link or an X (Twitter) post link, and click **Download Video**.
+The video is saved to your `~/Downloads` folder.
+
+If an X post has more than one video, Snapshotter downloads the first one. To get a different
+video, open it on X and copy its link. The link ends in `/video/2`, `/video/3` and so on.
+Only public posts work: posts marked as sensitive and posts from private accounts need a
+signed-in account, which Snapshotter doesn't support.
 
 ## Install
 
